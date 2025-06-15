@@ -22,6 +22,13 @@ import os
 import tempfile
 import subprocess
 
+def translateRequest(request : str):
+    if("vermelha" in request.lower()):
+        return "pick the red screwdriver and hold it in the air"
+    elif("amarela"  in request.lower()):
+        return "pick the yellow screwdriver and hold it in the air"
+    elif("azul"  in request.lower()):
+        return "pick the blue screwdriver and hold it in the air"
 
 def speak_text_file(text, lang='pt'):
     tts = gTTS(text=text, lang=lang)
@@ -89,7 +96,7 @@ class VoiceIA:
         response = self.client.models.generate_content(
         model='gemini-2.0-flash',
         contents=[
-            'Dado o audio a seguir de uma resposta sempre contendo apenas uma palavra dentre as seguintes: "fenda grande", "fenda pequena", "phillips grande", "phillips pequena", "morsa", "morsa"    ',
+            'Dado o audio a seguir de uma resposta sempre contendo apenas uma palavra dentre as seguintes que mais se encaixa com o pedido: "fenda amarela", "fenda vermelha", "phillips azul" ou "opção não disponível"',
             types.Part.from_bytes(
                 data=audio_bytes,
                 mime_type='audio/wav',
@@ -125,7 +132,16 @@ class VoiceIA:
                         speak_text_file("Olá!")
                         record_audio(filename="audio_after_activation.wav", duration=4)  # Record for 3 seconds
                         speak_text_file("Um momento!")
-                        return self.send_to_gemini()
+                        answer= self.send_to_gemini()
+                        if("não" in answer.lower()):
+                            speak_text_file(answer)
+                            return None
+                        answer=translateRequest(answer)
+                        print(answer)
+                        return answer
+                if c.lower() == "pegar" or c.lower() == "pega" :
+                    speak_text_file("Pegando!")
+                    return "Pegar"
             except sr.WaitTimeoutError:
                 print("Timeout reached without hearing the activation word.")
             except sr.UnknownValueError:
@@ -133,6 +149,38 @@ class VoiceIA:
             except sr.RequestError:
                 print("Speech recognition service error.")
             return None
+
+    def listen_to_drop(self):
+        recognizer = sr.Recognizer()
+        microphone = sr.Microphone()
+        activation_word="Soltar Largar Dar"
+        print(f"Listening for activation word '{activation_word}'...")
+
+        with microphone as source:
+            # Adjust for ambient noise
+            recognizer.adjust_for_ambient_noise(source)
+            print("Listening...")
+
+            # Listen to the audio and convert to text
+            try:
+                audio = recognizer.listen(source, timeout=5)
+                command = recognizer.recognize_google(audio, language='pt-BR')
+                print(f"Heard: {command}")
+
+                # Check if the activation word is in the recognized text
+                command = command.split()
+                for c in command:
+                    if c.lower() in activation_word.lower().split():
+                        speak_text_file("Soltando")
+                        time.sleep(0.5)
+                        return True
+            except sr.WaitTimeoutError:
+                print("Timeout reached without hearing the activation word.")
+            except sr.UnknownValueError:
+                print("Sorry, I did not understand that.")
+            except sr.RequestError:
+                print("Speech recognition service error.")
+            return False
 
     def stop(self):
         if self._running:

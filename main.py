@@ -1,11 +1,25 @@
 from enum import auto, Enum
+from pathlib import Path
 import time
 
 import numpy as np
 from custom.gemini import VoiceIA
+from custom.goto_standby import pos_standby
+from custom.smol_run import RobotIA
+from custom.open import openGripper
 from lerobot.common.robots.so101_follower import SO101FollowerConfig, SO101Follower
-
+from lerobot.common.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+from typing import Any
+from lerobot.common.cameras.configs import ColorMode, Cv2Rotation
 from yolo.yolo import YOLOModel
+
+
+class_to_request = {
+    "yellow": "put aside the yellow screwdriver in the third rectangle, and go to standby position",
+    "red": "put aside the red screwdriver in the second rectangle, and go to standby position",
+    "blue": "put aside the blue screwdriver in the fourth rectangle, and go to standby position",
+}
+
 
 class RobotStates(Enum):
     STANDBY = auto()
@@ -33,25 +47,49 @@ class StateRunner:
         print("Robot stopped")
 
     def _prepare_systems(self):
-        self.robot = self._prepare_robot()
         self.yolo = self._prepare_yolo()
+
+        self.robot = self._prepare_robot()
+        self.robot_cam = self.robot.cameras["robo"]
+        pos_standby(self.robot)
+
+        self.robotIA= RobotIA(self.robot,"/home/fablab/lerobot/outputs/train/Neurof14K/checkpoints/last/pretrained_model")
         self.voice = self._prepare_voice()
 
     def _prepare_robot(self):
         print("Preparing robot")
-        print("Robot ready")
-        # robot_config = SO101FollowerConfig(
-        #     port="/dev/ttyACM0",
-        #     id="movie",
-        # )
+        camera_external_config = OpenCVCameraConfig(
+            index_or_path=7,
+            fps=30,
+            width=640,
+            height=480,
+            color_mode=ColorMode.RGB,
+            rotation=Cv2Rotation.NO_ROTATION,
+        )
 
-        # robot = SO101Follower(robot_config)
-        # self.robot.connect()
-        # return robot
+        camera_bot_config = OpenCVCameraConfig(
+            index_or_path=1,
+            fps=30,
+            width=640,
+            height=480,
+            color_mode=ColorMode.RGB,
+            rotation=Cv2Rotation.NO_ROTATION,
+        )
+
+        robot_config = SO101FollowerConfig(
+            port="/dev/ttyACM0",
+            cameras={"robo": camera_bot_config, "out": camera_external_config},
+            id="movie",
+        )
+        robot = SO101Follower(robot_config)
+        robot.connect()
+        print("Robot ready")
+        return robot
 
     def _prepare_yolo(self):
+        #return None
         print("Preparing YOLO")
-        yolo = YOLOModel("model.pt")
+        yolo = YOLOModel(Path("model.pt"))
         print("YOLO ready")
         return yolo
 
@@ -70,84 +108,75 @@ class StateRunner:
         if not isinstance(state, RobotStates):
             raise ValueError(f"Invalid state: {state}")
         self.state = state
-        self._prepare_voice()
+        self._verify_voice()
 
-    def _prepare_voice(self):
-        if self.state in (
-            RobotStates.STANDBY,
-            RobotStates.WAIT_VOICE_RELEASE
-        ):
+    def _verify_voice(self):
+        if self.state == (RobotStates.STANDBY):
             self.voice.listen()
         elif self.state in (
+            RobotStates.WAIT_VOICE_RELEASE,
             RobotStates.RETRIEVE_OBJECT,
             RobotStates.STORE_OBJECT,
-            RobotStates.GOTO_STANDBY
+            RobotStates.GOTO_STANDBY,
         ):
             self.voice.stop()
 
     def standby(self):
         # Aguarda presenca de pecas da pessoa
-        # image = self.robot.get_image()
-        # class = self.yolo.predict_best_class(image)
-        # if class != "none":
-        #     # Move to next state
-        #     self.detected_class = class
-        #     self.set_state(RobotStates.STORE_OBJECT)
 
         # Aguarda comando de voz
         if self.voice.request_is_ready():
-            self.request=self.voice.read_request()
+            self.request = self.voice.read_request()
             self.voice.stop()
-
+            if(self.request.lower()=="pegar"):
+                self.pick()
+                return
             # Move to next state
             self.set_state(RobotStates.RETRIEVE_OBJECT)
 
+    def pick(self):
+        image = self.robot_cam.async_read(timeout_ms=200)
+        detected_class = self.yolo.predict_best_class(image)
+        if detected_class != "none":
+            # Move to next state
+            self.request = class_to_request[detected_class]
+            time.sleep(2)
+            self.set_state(RobotStates.STORE_OBJECT)
+
     def store_object(self):
         # Store object
-        # self.detected_class
-        # self.robot.send_action()
-
+        self.robotIA.run_task(self.request, duration=60)
+        time.sleep(1)
+        openGripper(self.robot)
+        time.sleep(1)
         # Move to next state
         self.set_state(RobotStates.GOTO_STANDBY)
 
     def retrieve_object(self):
         # Vai para o ponto antes de pegar objetos
-        # self.request
-        # self.robot.send_action()
+        self.robotIA.run_task(self.request, duration=60)
 
         # Move to next state
         self.set_state(RobotStates.WAIT_VOICE_RELEASE)
 
     def wait_voice_release(self):
         # Aguarda comando de voz para soltar
-        # self.voice.request
-        # self.robot.send_action()
+        if self.voice.listen_to_drop():
+            openGripper(self.robot)
+            time.sleep(2)
 
-        # Move to next state
-        self.set_state(RobotStates.GOTO_STANDBY)
+            # Move to next state
+            self.set_state(RobotStates.GOTO_STANDBY)
 
     def goto_standby(self):
         """Utiliza ângulos fixos dos motores para ir para a posicao de standby"""
         # Move to standby position
-        # robot.send_action({'shoulder_pan.pos': 46.93274205469328, 'shoulder_lift.pos': 12.880366819508126, 'elbow_flex.pos': -9.432275368797491, 'wrist_flex.pos': 79.80535279805352, 'wrist_roll.pos': 9.614880796436992, 'gripper.pos': 1.1058451816745656})
         self.voice.listen()
+        pos_standby(self.robot)
 
         # Move to next state
         self.set_state(RobotStates.STANDBY)
 
-    #
-    #   Helper functions
-    #
-
-    def _release_grip(self):
-        # Open the robot's grip
-        # robot.send_action()
-        ...
-
-    def _close_grip(self):
-        # Close the robot's grip
-        # robot.send_action()
-        ...
 
 def main():
     bot = StateRunner()
@@ -155,6 +184,7 @@ def main():
         bot.run_states()
     except KeyboardInterrupt:
         print("Program stopped")
+
 
 if __name__ == "__main__":
     main()
